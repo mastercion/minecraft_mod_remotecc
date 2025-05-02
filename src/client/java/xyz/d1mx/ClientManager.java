@@ -116,7 +116,12 @@ public class ClientManager {
 
     public static void handleIncomingChatMessage(String messageFromMaster) {
         if (MinecraftClient.getInstance().player != null) {
-            MinecraftClient.getInstance().player.sendMessage(Text.literal("§7[Master -> RemoteCC]: §f" + messageFromMaster), false);
+            // If message starts with #, send it directly to chat
+            if (messageFromMaster.startsWith("#")) {
+                MinecraftClient.getInstance().player.networkHandler.sendChatMessage(messageFromMaster);
+            } else {
+                MinecraftClient.getInstance().player.sendMessage(Text.literal(messageFromMaster), false);
+            }
         }
     }
 
@@ -144,6 +149,11 @@ public class ClientManager {
                 String slaveAddress = slave.getInetAddress().getHostAddress();
                 connectedClient.set("SLAVE");
                 RemoteCCMod.LOGGER.info("Master connected with SLAVE at " + slaveAddress);
+
+                // Show chat message with slave IP to master
+                if (MinecraftClient.getInstance().player != null) {
+                    MinecraftClient.getInstance().player.sendMessage(Text.literal("§7[RemoteCC]: §fSlave connected from " + slaveAddress), false);
+                }
 
                 // Setze die Instanzvariablen für die Kommunikation
                 this.writer = slaveWriter;
