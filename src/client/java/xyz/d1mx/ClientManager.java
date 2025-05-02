@@ -1,12 +1,19 @@
 package xyz.d1mx;
 
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.text.Text;
+
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class ClientManager {
+
     private static ClientMode mode = ClientMode.NONE;
     private static ServerSocket serverSocket;
     private static Socket clientSocket;
@@ -54,6 +61,9 @@ public class ClientManager {
             connectedClient.set("MASTER");
             RemoteCCMod.LOGGER.info("Slave connected with MASTER");
 
+            // Starte den Thread zum Lesen von Nachrichten
+            new Thread(ClientManager::readMessages).start();
+
             return new ConnectResult(true, "Connected to MASTER at " + address);
         } catch (Exception e) {
             RemoteCCMod.LOGGER.error("Failed to connect", e);
@@ -88,36 +98,108 @@ public class ClientManager {
         connectedClient.set(null);
     }
 
+    public static void sendChatMessageToSlave(String message) {
+        if (mode == ClientMode.MASTER && connectionThread != null && connectionThread.getWriter() != null) {
+            connectionThread.getWriter().println("CHAT " + message);
+        } else {
+            RemoteCCMod.LOGGER.warn("Cannot send chat message: Not in MASTER mode or not connected.");
+        }
+    }
+
+    public static void sendCommandToSlave(String command) {
+        if (mode == ClientMode.MASTER && connectionThread != null && connectionThread.getWriter() != null) {
+            connectionThread.getWriter().println("COMMAND " + command);
+        } else {
+            RemoteCCMod.LOGGER.warn("Cannot send command: Not in MASTER mode or not connected.");
+        }
+    }
+
+    public static void handleIncomingChatMessage(String messageFromMaster) {
+        if (MinecraftClient.getInstance().player != null) {
+            MinecraftClient.getInstance().player.sendMessage(Text.literal("§7[Master -> RemoteCC]: §f" + messageFromMaster), false);
+        }
+    }
+
+    public static void handleIncomingCommand(String commandFromMaster) {
+        if (MinecraftClient.getInstance().player != null && MinecraftClient.getInstance().getServer() != null) {
+            MinecraftClient.getInstance().getServer().getCommandManager().executeWithPrefix(MinecraftClient.getInstance().getServer().getCommandSource().withEntity(MinecraftClient.getInstance().player), commandFromMaster);
+        } else {
+            RemoteCCMod.LOGGER.warn("Could not execute command from master. No local server found.");
+        }
+    }
+
     private static class ConnectionThread extends Thread {
+        private PrintWriter writer;
+
+        public PrintWriter getWriter() {
+            return writer;
+        }
+
         @Override
         public void run() {
-            while (!Thread.currentThread().isInterrupted() && serverSocket != null && !serverSocket.isClosed()) {
-                try {
-                    Socket slave = serverSocket.accept();
-                    String slaveAddress = slave.getInetAddress().getHostAddress();
-                    connectedClient.set("SLAVE");
+            try (Socket slave = serverSocket.accept();
+                 PrintWriter slaveWriter = new PrintWriter(slave.getOutputStream(), true);
+                 BufferedReader slaveReader = new BufferedReader(new InputStreamReader(slave.getInputStream()))) {
 
-                    // Log the connection instead of using client methods
-                    RemoteCCMod.LOGGER.info("Master connected with SLAVE at " + slaveAddress);
+                String slaveAddress = slave.getInetAddress().getHostAddress();
+                connectedClient.set("SLAVE");
+                RemoteCCMod.LOGGER.info("Master connected with SLAVE at " + slaveAddress);
 
-                    // Wait until the connection is closed
-                    try {
-                        while (slave.isConnected() && !slave.isClosed()) {
-                            Thread.sleep(1000);
-                        }
-                    } catch (InterruptedException e) {
-                        break;
-                    } finally {
-                        slave.close();
-                    }
+                // Setze die Instanzvariablen für die Kommunikation
+                this.writer = slaveWriter;
 
-                } catch (IOException e) {
-                    if (!Thread.currentThread().isInterrupted()) {
-                        RemoteCCMod.LOGGER.error("Error in connection thread", e);
-                    }
-                    break;
+                String line;
+                while (!Thread.currentThread().isInterrupted() && (line = slaveReader.readLine()) != null) {
+                    processIncomingMessage(line);
                 }
+
+            } catch (IOException e) {
+                if (!Thread.currentThread().isInterrupted()) {
+                    RemoteCCMod.LOGGER.error("Error in connection thread", e);
+                }
+            } finally {
+                disconnect();
             }
+        }
+
+        private void processIncomingMessage(String line) {
+            if (line.startsWith("CHAT ")) {
+                String chatMessage = line.substring(5);
+                MinecraftClient.getInstance().execute(() -> handleIncomingChatMessage(chatMessage));
+            } else if (line.startsWith("COMMAND ")) {
+                String command = line.substring(8);
+                MinecraftClient.getInstance().execute(() -> handleIncomingCommand(command));
+            } else {
+                RemoteCCMod.LOGGER.warn("Unknown message type: " + line);
+            }
+        }
+    }
+
+    private static void readMessages() {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+             PrintWriter writer = new PrintWriter(clientSocket.getOutputStream(), true)) {
+
+            String line;
+            while ((line = reader.readLine()) != null) {
+                processIncomingMessage(line);
+            }
+
+        } catch (IOException e) {
+            RemoteCCMod.LOGGER.error("Error reading from server", e);
+        } finally {
+            disconnect();
+        }
+    }
+
+    private static void processIncomingMessage(String line) {
+        if (line.startsWith("CHAT ")) {
+            String chatMessage = line.substring(5);
+            MinecraftClient.getInstance().execute(() -> handleIncomingChatMessage(chatMessage));
+        } else if (line.startsWith("COMMAND ")) {
+            String command = line.substring(8);
+            MinecraftClient.getInstance().execute(() -> handleIncomingCommand(command));
+        } else {
+            RemoteCCMod.LOGGER.warn("Unknown message type: " + line);
         }
     }
 }
