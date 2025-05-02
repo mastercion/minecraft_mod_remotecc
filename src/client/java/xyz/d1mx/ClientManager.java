@@ -61,7 +61,7 @@ public class ClientManager {
             connectedClient.set("MASTER");
             RemoteCCMod.LOGGER.info("Slave connected with MASTER");
 
-            // Starte den Thread zum Lesen von Nachrichten
+            // Start reading Thread
             new Thread(ClientManager::readMessages).start();
 
             return new ConnectResult(true, "Connected to MASTER at " + address);
@@ -116,7 +116,7 @@ public class ClientManager {
 
     public static void handleIncomingChatMessage(String messageFromMaster) {
         if (MinecraftClient.getInstance().player != null) {
-            // If message starts with #, send it directly to chat
+            // React to baritone prefix
             if (messageFromMaster.startsWith("#")) {
                 MinecraftClient.getInstance().player.networkHandler.sendChatMessage(messageFromMaster);
             } else {
@@ -155,7 +155,7 @@ public class ClientManager {
                     MinecraftClient.getInstance().player.sendMessage(Text.literal("§7[RemoteCC]: §fSlave connected from " + slaveAddress), false);
                 }
 
-                // Setze die Instanzvariablen für die Kommunikation
+                // Set instance for Writer
                 this.writer = slaveWriter;
 
                 String line;
