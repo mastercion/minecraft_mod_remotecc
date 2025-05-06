@@ -151,7 +151,22 @@ public class ClientManager {
         connectedClient.set(null);
     }
 
-    public static void sendChatMessageToSlave(String message) {
+    public static boolean sendChatMessageToSlave(String slaveName, String message) {
+        if (mode == ClientMode.MASTER) {
+            for (SlaveInstance slave : connectedSlaves) {
+                if (slave.getName().equals(slaveName)) {
+                    slave.getWriter().println("CHAT " + message);
+                    return true;
+                }
+            }
+            return false;
+        } else {
+            RemoteCCMod.LOGGER.warn("Cannot send chat message: Not in MASTER mode.");
+            return false;
+        }
+    }
+
+    public static void sendChatMessageToAllSlaves(String message) {
         if (mode == ClientMode.MASTER) {
             for (SlaveInstance slave : connectedSlaves) {
                 slave.getWriter().println("CHAT " + message);
@@ -258,5 +273,11 @@ public class ClientManager {
         } else {
             RemoteCCMod.LOGGER.warn("Unknown message type: " + line);
         }
+    }
+
+    public static List<String> getConnectedSlaveNames() {
+        return connectedSlaves.stream()
+                .map(SlaveInstance::getName)
+                .toList();
     }
 }

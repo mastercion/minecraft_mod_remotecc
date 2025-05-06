@@ -55,19 +55,38 @@ public class RemoteCCMod implements ClientModInitializer {
                         return 1;
                     }))
                     .then(ClientCommandManager.literal("chat")
-                            .then(ClientCommandManager.argument("message", StringArgumentType.greedyString())
-                                    .executes(context -> {
-                                        String message = StringArgumentType.getString(context, "message");
-                                        // Send ChatMessage using the Slave
-                                        ClientManager.sendChatMessageToSlave(message);
-                                        MinecraftClient.getInstance().player.sendMessage(Text.literal("§7[RemoteCC -> Slave]: §f" + message), false);
-                                        return 1;
-                                    })))
+                            .then(ClientCommandManager.argument("slave", StringArgumentType.string())
+                                    .suggests((context, builder) -> {
+                                        builder.suggest("@a");
+                                        builder.suggest("all");
+                                        for (String slaveName : ClientManager.getConnectedSlaveNames()) {
+                                            builder.suggest(slaveName);
+                                        }
+                                        return builder.buildFuture();
+                                    })
+                                    .then(ClientCommandManager.argument("message", StringArgumentType.greedyString())
+                                            .executes(context -> {
+                                                String slaveName = StringArgumentType.getString(context, "slave");
+                                                String message = StringArgumentType.getString(context, "message");
+
+                                                if (slaveName.equals("@a") || slaveName.equals("all")) {
+                                                    ClientManager.sendChatMessageToAllSlaves(message);
+                                                    MinecraftClient.getInstance().player.sendMessage(Text.literal("§7[RemoteCC -> ALL]: §f" + message), false);
+                                                } else {
+                                                    boolean sent = ClientManager.sendChatMessageToSlave(slaveName, message);
+                                                    if (sent) {
+                                                        MinecraftClient.getInstance().player.sendMessage(Text.literal("§7[RemoteCC -> " + slaveName + "]: §f" + message), false);
+                                                    } else {
+                                                        MinecraftClient.getInstance().player.sendMessage(Text.literal("§c[RemoteCC] Slave " + slaveName + " not found"), false);
+                                                    }
+                                                }
+                                                return 1;
+                                            }))))
                     .then(ClientCommandManager.literal("command")
                             .then(ClientCommandManager.argument("command", StringArgumentType.greedyString())
                                     .executes(context -> {
                                         String command = StringArgumentType.getString(context, "command");
-                                        // Send Command using the Slave
+                                        // Hier würde der Befehl über ClientManager an den Slave gesendet
                                         ClientManager.sendCommandToSlave(command);
                                         MinecraftClient.getInstance().player.sendMessage(Text.literal("§7[RemoteCC -> Slave (Command)]: §f/" + command), false);
                                         return 1;
