@@ -10,15 +10,58 @@ import java.io.PrintWriter;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class ClientManager {
+    private static class SlaveInstance {
+        private final String name;
+        private final Socket socket;
+        private final PrintWriter writer;
+        private final BufferedReader reader;
+        private final Thread messageThread;
+
+        public SlaveInstance(String name, Socket socket, PrintWriter writer, BufferedReader reader, Thread messageThread) {
+            this.name = name;
+            this.socket = socket;
+            this.writer = writer;
+            this.reader = reader;
+            this.messageThread = messageThread;
+        }
+
+        public String getName() { return name; }
+        public Socket getSocket() { return socket; }
+        public PrintWriter getWriter() { return writer; }
+        public BufferedReader getReader() { return reader; }
+        public Thread getMessageThread() { return messageThread; }
+    }
 
     private static ClientMode mode = ClientMode.NONE;
     private static ServerSocket serverSocket;
     private static Socket clientSocket;
     private static final AtomicReference<String> connectedClient = new AtomicReference<>(null);
     private static ConnectionThread connectionThread;
+    private static final List<SlaveInstance> connectedSlaves = new ArrayList<>();
+    private static final Random random = new Random();
+    private static final String[] namePrefixes = {
+            "RandomLover", "TechWizard", "PixelPilot", "CodeNinja", "ByteMaster",
+            "NetRunner", "DataDiver", "CyberSlave", "BitBender", "LogicLord",
+            "ChipChampion", "BinaryBoss", "QuantumQuirk", "DigitalDynamo", "CircuitSage",
+            "AlgoAce", "MatrixMaven", "CloudCrawler", "ServerSage", "NetNode",
+            "DataDragon", "ByteBaron", "CodeCzar", "BitBaron", "LogicLion",
+            "ChipChief", "BinaryBaron", "QuantumKing", "DigitalDuke", "CircuitCzar",
+            "AlgoArch", "MatrixMaster", "CloudKing", "ServerSultan", "NetNoble",
+            "DataDuke", "ByteBaron", "CodeCzar", "BitBaron", "LogicLord",
+            "ChipChampion", "BinaryBoss", "QuantumQuirk", "DigitalDynamo", "CircuitSage"
+    };
+
+    private static String generateSlaveName() {
+        String prefix = namePrefixes[random.nextInt(namePrefixes.length)];
+        int number = random.nextInt(10000);
+        return String.format("%s%04d", prefix, number);
+    }
 
     public static void setMode(ClientMode newMode) {
         disconnect();
@@ -61,7 +104,6 @@ public class ClientManager {
             connectedClient.set("MASTER");
             RemoteCCMod.LOGGER.info("Slave connected with MASTER");
 
-            // Start reading Thread
             new Thread(ClientManager::readMessages).start();
 
             return new ConnectResult(true, "Connected to MASTER at " + address);
@@ -95,28 +137,43 @@ public class ClientManager {
             clientSocket = null;
         }
 
+        // Disconnect all slaves
+        for (SlaveInstance slave : connectedSlaves) {
+            try {
+                slave.getSocket().close();
+                slave.getMessageThread().interrupt();
+            } catch (IOException e) {
+                RemoteCCMod.LOGGER.error("Error closing slave socket", e);
+            }
+        }
+        connectedSlaves.clear();
+
         connectedClient.set(null);
     }
 
     public static void sendChatMessageToSlave(String message) {
-        if (mode == ClientMode.MASTER && connectionThread != null && connectionThread.getWriter() != null) {
-            connectionThread.getWriter().println("CHAT " + message);
+        if (mode == ClientMode.MASTER) {
+            for (SlaveInstance slave : connectedSlaves) {
+                slave.getWriter().println("CHAT " + message);
+            }
         } else {
-            RemoteCCMod.LOGGER.warn("Cannot send chat message: Not in MASTER mode or not connected.");
+            RemoteCCMod.LOGGER.warn("Cannot send chat message: Not in MASTER mode.");
         }
     }
 
     public static void sendCommandToSlave(String command) {
-        if (mode == ClientMode.MASTER && connectionThread != null && connectionThread.getWriter() != null) {
-            connectionThread.getWriter().println("COMMAND " + command);
+        if (mode == ClientMode.MASTER) {
+            for (SlaveInstance slave : connectedSlaves) {
+                slave.getWriter().println("COMMAND " + command);
+            }
         } else {
-            RemoteCCMod.LOGGER.warn("Cannot send command: Not in MASTER mode or not connected.");
+            RemoteCCMod.LOGGER.warn("Cannot send command: Not in MASTER mode.");
         }
     }
 
     public static void handleIncomingChatMessage(String messageFromMaster) {
         if (MinecraftClient.getInstance().player != null) {
-            // React to baritone prefix
+            // If message starts with #, send it directly to chat
             if (messageFromMaster.startsWith("#")) {
                 MinecraftClient.getInstance().player.networkHandler.sendChatMessage(messageFromMaster);
             } else {
@@ -134,53 +191,43 @@ public class ClientManager {
     }
 
     private static class ConnectionThread extends Thread {
-        private PrintWriter writer;
-
-        public PrintWriter getWriter() {
-            return writer;
-        }
-
         @Override
         public void run() {
-            try (Socket slave = serverSocket.accept();
-                 PrintWriter slaveWriter = new PrintWriter(slave.getOutputStream(), true);
-                 BufferedReader slaveReader = new BufferedReader(new InputStreamReader(slave.getInputStream()))) {
+            while (!Thread.currentThread().isInterrupted()) {
+                try {
+                    Socket slaveSocket = serverSocket.accept();
+                    String slaveAddress = slaveSocket.getInetAddress().getHostAddress();
+                    String slaveName = generateSlaveName();
 
-                String slaveAddress = slave.getInetAddress().getHostAddress();
-                connectedClient.set("SLAVE");
-                RemoteCCMod.LOGGER.info("Master connected with SLAVE at " + slaveAddress);
+                    PrintWriter slaveWriter = new PrintWriter(slaveSocket.getOutputStream(), true);
+                    BufferedReader slaveReader = new BufferedReader(new InputStreamReader(slaveSocket.getInputStream()));
 
-                // Show chat message with slave IP to master
-                if (MinecraftClient.getInstance().player != null) {
-                    MinecraftClient.getInstance().player.sendMessage(Text.literal("§7[RemoteCC]: §fSlave connected from " + slaveAddress), false);
+                    Thread messageThread = new Thread(() -> {
+                        try {
+                            String line;
+                            while (!Thread.currentThread().isInterrupted() && (line = slaveReader.readLine()) != null) {
+                                processIncomingMessage(line);
+                            }
+                        } catch (IOException e) {
+                            if (!Thread.currentThread().isInterrupted()) {
+                                RemoteCCMod.LOGGER.error("Error in slave message thread", e);
+                            }
+                        }
+                    });
+                    messageThread.start();
+
+                    SlaveInstance slaveInstance = new SlaveInstance(slaveName, slaveSocket, slaveWriter, slaveReader, messageThread);
+                    connectedSlaves.add(slaveInstance);
+
+                    if (MinecraftClient.getInstance().player != null) {
+                        MinecraftClient.getInstance().player.sendMessage(Text.literal("§7[RemoteCC]: §fSlave [" + slaveName + "] connected from " + slaveAddress), false);
+                    }
+
+                } catch (IOException e) {
+                    if (!Thread.currentThread().isInterrupted()) {
+                        RemoteCCMod.LOGGER.error("Error accepting connection", e);
+                    }
                 }
-
-                // Set instance for Writer
-                this.writer = slaveWriter;
-
-                String line;
-                while (!Thread.currentThread().isInterrupted() && (line = slaveReader.readLine()) != null) {
-                    processIncomingMessage(line);
-                }
-
-            } catch (IOException e) {
-                if (!Thread.currentThread().isInterrupted()) {
-                    RemoteCCMod.LOGGER.error("Error in connection thread", e);
-                }
-            } finally {
-                disconnect();
-            }
-        }
-
-        private void processIncomingMessage(String line) {
-            if (line.startsWith("CHAT ")) {
-                String chatMessage = line.substring(5);
-                MinecraftClient.getInstance().execute(() -> handleIncomingChatMessage(chatMessage));
-            } else if (line.startsWith("COMMAND ")) {
-                String command = line.substring(8);
-                MinecraftClient.getInstance().execute(() -> handleIncomingCommand(command));
-            } else {
-                RemoteCCMod.LOGGER.warn("Unknown message type: " + line);
             }
         }
     }
